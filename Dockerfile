@@ -1,0 +1,7 @@
+# For hosts that run containers (Hugging Face Spaces, Fly.io, Koyeb, ...).
+FROM python:3.12-slim
+WORKDIR /app
+COPY . .
+ENV PORT=7860
+EXPOSE 7860
+CMD ["python", "server.py"]
