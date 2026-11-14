@@ -1,4 +1,4 @@
-"""Nagar Seth - game engine (board data, rules, rooms, bots).
+"""RupeeRush - game engine (board data, rules, rooms, bots).
 
 Everything here is synchronous and runs inside the server's asyncio loop.
 The server only needs: Room, Player, GameError, BOARD_PUBLIC.
@@ -8,89 +8,93 @@ import random
 import secrets
 import time
 
-SALARY = 200_000
-JAIL_FINE = 50_000
+SALARY = 200
+JAIL_FINE = 50
 JAIL_POS = 10
-GST_AMOUNT = 75_000
+GST_AMOUNT = 75
 RENT_MULT = [1, 5, 15, 40, 52, 65]
-STATION_RENT = [25_000, 50_000, 100_000, 200_000]
+STATION_RENT = [25, 50, 100, 200]
 AUCTION_FIRST_SECS = 10
 AUCTION_BID_SECS = 7
 AFK_GRACE = 20  # seconds before a disconnected player is auto-played
 HOST_GRACE = 10  # seconds a disconnected host keeps the host role
 
 GROUPS = {
-    'g1': {'name': 'Bihar & Jharkhand', 'color': '#b08968', 'houseCost': 50_000},
-    'g2': {'name': 'Central India', 'color': '#4fc3f7', 'houseCost': 50_000},
-    'g3': {'name': 'Uttar Pradesh', 'color': '#ba68c8', 'houseCost': 100_000},
-    'g4': {'name': 'Rajasthan', 'color': '#ff8a65', 'houseCost': 100_000},
-    'g5': {'name': 'The South', 'color': '#26a69a', 'houseCost': 150_000},
-    'g6': {'name': 'The West', 'color': '#ffd54f', 'houseCost': 150_000},
-    'g7': {'name': 'Big Metros', 'color': '#ec407a', 'houseCost': 200_000},
-    'g8': {'name': 'Power Capitals', 'color': '#7986cb', 'houseCost': 200_000},
+    'g1': {'name': 'Uttar Pradesh', 'color': '#b08968', 'houseCost': 50},
+    'g2': {'name': 'Rajasthan', 'color': '#4fc3f7', 'houseCost': 50},
+    'g3': {'name': 'Gujarat', 'color': '#ba68c8', 'houseCost': 100},
+    'g4': {'name': 'West Bengal', 'color': '#ff8a65', 'houseCost': 100},
+    'g5': {'name': 'Tamil Nadu', 'color': '#26a69a', 'houseCost': 150},
+    'g6': {'name': 'Telangana', 'color': '#ffd54f', 'houseCost': 150},
+    'g7': {'name': 'Karnataka', 'color': '#ec407a', 'houseCost': 200},
+    'g8': {'name': 'Maharashtra', 'color': '#7986cb', 'houseCost': 200},
 }
 
 
 def _city(name, group, price):
-    base = (price * 7 + 50_000) // 100_000 * 1000
+    base = (price * 7 + 50) // 100
     return {'type': 'city', 'name': name, 'group': group, 'price': price,
             'rents': [base * m for m in RENT_MULT],
             'houseCost': GROUPS[group]['houseCost']}
 
 
 def _station(name, short):
-    return {'type': 'station', 'name': name, 'short': short, 'group': 'rail', 'price': 200_000}
+    return {'type': 'station', 'name': name, 'short': short, 'group': 'rail', 'price': 200}
 
 
 def _utility(name, short, icon):
-    return {'type': 'utility', 'name': name, 'short': short, 'group': 'util', 'price': 150_000, 'icon': icon}
+    return {'type': 'utility', 'name': name, 'short': short, 'group': 'util', 'price': 150, 'icon': icon}
+
+
+DECK_NAMES = {'luck': 'Lucky Card', 'treasure': 'Treasure'}
 
 
 def _card(deck):
-    return {'type': 'card', 'deck': deck, 'name': 'Kismat' if deck == 'kismat' else 'Khazana'}
+    return {'type': 'card', 'deck': deck, 'name': DECK_NAMES[deck]}
 
 
+# Every colour set is one state; the last city of a set is its biggest.
 TILES = [
-    {'type': 'start', 'name': 'Shuru'},
-    _city('Patna', 'g1', 60_000),
-    _card('khazana'),
-    _city('Ranchi', 'g1', 60_000),
+    {'type': 'start', 'name': 'Start'},
+    _city('Varanasi', 'g1', 60),
+    _card('treasure'),
+    _city('Lucknow', 'g1', 60),
     {'type': 'tax', 'name': 'Income Tax', 'kind': 'income'},
-    _station('New Delhi Railway Station', 'NDLS'),
-    _city('Bhopal', 'g2', 100_000),
-    _card('kismat'),
-    _city('Indore', 'g2', 100_000),
-    _city('Raipur', 'g2', 120_000),
+    _station('New Delhi Railway Station', 'New Delhi'),
+    _city('Udaipur', 'g2', 100),
+    _card('luck'),
+    _city('Jodhpur', 'g2', 100),
+    _city('Jaipur', 'g2', 120),
     {'type': 'jail', 'name': 'Jail'},
-    _city('Lucknow', 'g3', 140_000),
-    _utility('Bijli Board', 'Bijli', '💡'),
-    _city('Kanpur', 'g3', 140_000),
-    _city('Varanasi', 'g3', 160_000),
-    _station('Howrah Junction', 'HWH'),
-    _city('Jaipur', 'g4', 180_000),
-    _card('khazana'),
-    _city('Udaipur', 'g4', 180_000),
-    _city('Jodhpur', 'g4', 200_000),
-    {'type': 'vacation', 'name': 'Goa Chhutti'},
-    _city('Kochi', 'g5', 220_000),
-    _card('kismat'),
-    _city('Coimbatore', 'g5', 220_000),
-    _city('Chennai', 'g5', 240_000),
-    _station('Chennai Central', 'MAS'),
-    _city('Ahmedabad', 'g6', 260_000),
-    _city('Surat', 'g6', 260_000),
-    _utility('Jal Board', 'Jal', '🚰'),
-    _city('Pune', 'g6', 280_000),
+    _city('Vadodara', 'g3', 140),
+    _utility('Electricity Board', 'Power', '💡'),
+    _city('Surat', 'g3', 140),
+    _city('Ahmedabad', 'g3', 160),
+    _station('Howrah Junction', 'Howrah'),
+    _city('Siliguri', 'g4', 180),
+    _card('treasure'),
+    _city('Darjeeling', 'g4', 180),
+    _city('Kolkata', 'g4', 200),
+    {'type': 'vacation', 'name': 'Goa Vacation'},
+    _city('Coimbatore', 'g5', 220),
+    _card('luck'),
+    _city('Madurai', 'g5', 220),
+    _city('Chennai', 'g5', 240),
+    _station('Chennai Central', 'Chennai Ctrl'),
+    _city('Warangal', 'g6', 260),
+    _city('Nizamabad', 'g6', 260),
+    _utility('Water Board', 'Water', '🚰'),
+    _city('Hyderabad', 'g6', 280),
     {'type': 'gotojail', 'name': 'Go to Jail'},
-    _city('Kolkata', 'g7', 300_000),
-    _city('Hyderabad', 'g7', 300_000),
-    _card('khazana'),
-    _city('Bengaluru', 'g7', 320_000),
+    _city('Mysuru', 'g7', 300),
+    _city('Mangaluru', 'g7', 300),
+    _card('treasure'),
+    _city('Bengaluru', 'g7', 320),
     _station('Mumbai CSMT', 'CSMT'),
-    _card('kismat'),
-    _city('Delhi', 'g8', 350_000),
+    _card('luck'),
+    _city('Pune', 'g8', 350),
     {'type': 'tax', 'name': 'GST', 'kind': 'gst'},
-    _city('Mumbai', 'g8', 400_000),
+    _city('Mumbai', 'g8', 400),
 ]
 N = len(TILES)
 OWNABLE = ('city', 'station', 'utility')
@@ -101,51 +105,50 @@ for _i, _t in enumerate(TILES):
 STATIONS = GROUP_TILES['rail']
 TILE_BY_NAME = {t['name']: i for i, t in enumerate(TILES)}
 
-KISMAT = [
-    {'text': 'Your startup gets funded! Collect ₹1,50,000.', 'fx': 'cash', 'amt': 150_000},
-    {'text': 'Fresh start! Advance to Shuru and collect your salary.', 'fx': 'moveTo', 'to': 0},
-    {'text': 'Caught without a ticket on the local train. Pay ₹15,000.', 'fx': 'cash', 'amt': -15_000},
+LUCK = [
+    {'text': 'Your startup gets funded! Collect ₹150.', 'fx': 'cash', 'amt': 150},
+    {'text': 'Fresh start! Advance to Start and collect your salary.', 'fx': 'moveTo', 'to': 0},
+    {'text': 'Caught without a ticket on the local train. Pay ₹15.', 'fx': 'cash', 'amt': -15},
     {'text': 'Hop on the express! Advance to the nearest railway station.', 'fx': 'nearestStation'},
     {'text': 'Raid at your office! Go directly to Jail.', 'fx': 'jail'},
     {'text': 'A good lawyer in the family. Keep this Bail Card for later.', 'fx': 'jailCard'},
-    {'text': 'Wrong turn at the chowk. Go back 3 spaces.', 'fx': 'back', 'n': 3},
+    {'text': 'Wrong turn at the junction. Go back 3 spaces.', 'fx': 'back', 'n': 3},
     {'text': 'Business trip! Advance to Mumbai.', 'fx': 'moveTo', 'to': TILE_BY_NAME['Mumbai']},
-    {'text': 'Diwali bonus arrives. Collect ₹1,00,000.', 'fx': 'cash', 'amt': 100_000},
-    {'text': 'Monsoon damages your buildings. Pay ₹25,000 per house and ₹1,00,000 per hotel.',
-     'fx': 'repairs', 'house': 25_000, 'hotel': 100_000},
-    {'text': 'You host a big fat wedding. Pay every player ₹50,000.', 'fx': 'payEach', 'amt': 50_000},
-    {'text': 'Your cricket fantasy team tops the table. Collect ₹50,000.', 'fx': 'cash', 'amt': 50_000},
+    {'text': 'Diwali bonus arrives. Collect ₹100.', 'fx': 'cash', 'amt': 100},
+    {'text': 'Monsoon damages your buildings. Pay ₹25 per house and ₹100 per hotel.',
+     'fx': 'repairs', 'house': 25, 'hotel': 100},
+    {'text': 'You host a big fat wedding. Pay every player ₹50.', 'fx': 'payEach', 'amt': 50},
+    {'text': 'Your cricket fantasy team tops the table. Collect ₹50.', 'fx': 'cash', 'amt': 50},
     {'text': 'Heritage tour! Advance to Jaipur.', 'fx': 'moveTo', 'to': TILE_BY_NAME['Jaipur']},
-    {'text': 'Traffic challan for jumping a signal. Pay ₹20,000.', 'fx': 'cash', 'amt': -20_000},
-    {'text': 'Time for a break. Advance to Goa Chhutti.', 'fx': 'moveTo', 'to': 20},
+    {'text': 'Traffic fine for jumping a signal. Pay ₹20.', 'fx': 'cash', 'amt': -20},
+    {'text': 'Time for a break. Advance to Goa Vacation.', 'fx': 'moveTo', 'to': 20},
     {'text': 'Catch the night mail. Advance to Howrah Junction.', 'fx': 'moveTo', 'to': TILE_BY_NAME['Howrah Junction']},
 ]
-KHAZANA = [
-    {'text': 'Income tax refund credited. Collect ₹20,000.', 'fx': 'cash', 'amt': 20_000},
-    {'text': 'Your fixed deposit matures. Collect ₹1,00,000.', 'fx': 'cash', 'amt': 100_000},
-    {'text': 'Hospital bill. Pay ₹1,00,000.', 'fx': 'cash', 'amt': -100_000},
-    {'text': 'School fees are due. Pay ₹50,000.', 'fx': 'cash', 'amt': -50_000},
-    {'text': "It's your birthday! Collect ₹10,000 from every player.", 'fx': 'collectEach', 'amt': 10_000},
-    {'text': 'You inherit ancestral land. Collect ₹1,00,000.', 'fx': 'cash', 'amt': 100_000},
+TREASURE = [
+    {'text': 'Income tax refund credited. Collect ₹20.', 'fx': 'cash', 'amt': 20},
+    {'text': 'Your fixed deposit matures. Collect ₹100.', 'fx': 'cash', 'amt': 100},
+    {'text': 'Hospital bill. Pay ₹100.', 'fx': 'cash', 'amt': -100},
+    {'text': 'School fees are due. Pay ₹50.', 'fx': 'cash', 'amt': -50},
+    {'text': "It's your birthday! Collect ₹10 from every player.", 'fx': 'collectEach', 'amt': 10},
+    {'text': 'You inherit ancestral land. Collect ₹100.', 'fx': 'cash', 'amt': 100},
     {'text': 'An old friend is now a judge. Keep this Bail Card for later.', 'fx': 'jailCard'},
     {'text': 'Papers not in order. Go directly to Jail.', 'fx': 'jail'},
-    {'text': 'You win the colony rangoli contest. Collect ₹10,000.', 'fx': 'cash', 'amt': 10_000},
-    {'text': 'Sold old gold jewellery at a great rate. Collect ₹50,000.', 'fx': 'cash', 'amt': 50_000},
-    {'text': 'Municipal repairs notice. Pay ₹40,000 per house and ₹1,15,000 per hotel.',
-     'fx': 'repairs', 'house': 40_000, 'hotel': 115_000},
-    {'text': 'Consultancy fee received. Collect ₹25,000.', 'fx': 'cash', 'amt': 25_000},
-    {'text': 'Cashback jackpot on a payment app! Collect ₹2,00,000.', 'fx': 'cash', 'amt': 200_000},
-    {'text': 'Back to where it began. Advance to Shuru.', 'fx': 'moveTo', 'to': 0},
-    {'text': 'Your monthly investments pay off. Collect ₹45,000.', 'fx': 'cash', 'amt': 45_000},
-    {'text': 'Paid the electricity bill late. Pay ₹50,000.', 'fx': 'cash', 'amt': -50_000},
+    {'text': 'You win the neighbourhood talent contest. Collect ₹10.', 'fx': 'cash', 'amt': 10},
+    {'text': 'Sold old gold jewellery at a great rate. Collect ₹50.', 'fx': 'cash', 'amt': 50},
+    {'text': 'Municipal repairs notice. Pay ₹40 per house and ₹115 per hotel.',
+     'fx': 'repairs', 'house': 40, 'hotel': 115},
+    {'text': 'Consultancy fee received. Collect ₹25.', 'fx': 'cash', 'amt': 25},
+    {'text': 'Cashback jackpot on a payment app! Collect ₹200.', 'fx': 'cash', 'amt': 200},
+    {'text': 'Back to where it began. Advance to Start.', 'fx': 'moveTo', 'to': 0},
+    {'text': 'Your monthly investments pay off. Collect ₹45.', 'fx': 'cash', 'amt': 45},
+    {'text': 'Paid the electricity bill late. Pay ₹50.', 'fx': 'cash', 'amt': -50},
 ]
-DECKS = {'kismat': KISMAT, 'khazana': KHAZANA}
+DECKS = {'luck': LUCK, 'treasure': TREASURE}
 
 COLORS = ['#ff6b6b', '#ffa94d', '#ffe066', '#69db7c', '#3bc9db', '#748ffc', '#da77f2', '#f783ac']
 AVATARS = ['🛺', '🐘', '🐅', '🦚', '🏏', '🪁', '☕', '🛕', '🥭', '🪔', '🚂', '🐪']
-BOT_NAMES = ['Seth Dhaniram', 'Lala Kuberchand', 'Munshi Ji', 'Nawab Sahab',
-             'Rani Sahiba', 'Thakur Sahab', 'Bibi Ji']
-STARTING_CASH_OPTIONS = [1_000_000, 1_500_000, 2_000_000, 2_500_000, 3_000_000]
+BOT_NAMES = ['Aarav', 'Diya', 'Kabir', 'Meera', 'Rohan', 'Isha', 'Vikram']
+STARTING_CASH_OPTIONS = [1_000, 1_500, 2_000, 2_500, 3_000]
 BOOL_SETTINGS = ['doubleRent', 'vacationCash', 'auction', 'noRentInJail', 'mortgage', 'evenBuild', 'randomOrder']
 
 BOARD_PUBLIC = {
@@ -157,17 +160,7 @@ BOARD_PUBLIC = {
 
 def inr(n):
     n = int(n)
-    s = str(abs(n))
-    if len(s) > 3:
-        head, tail = s[:-3], s[-3:]
-        parts = []
-        while len(head) > 2:
-            parts.insert(0, head[-2:])
-            head = head[:-2]
-        if head:
-            parts.insert(0, head)
-        s = ','.join(parts) + ',' + tail
-    return ('-' if n < 0 else '') + '₹' + s
+    return ('-' if n < 0 else '') + '₹' + format(abs(n), ',')
 
 
 class GameError(Exception):
@@ -212,7 +205,7 @@ class Room:
         self.spectators = set()
         self.host_id = None
         self.phase = 'lobby'
-        self.settings = {'startingCash': 1_500_000, 'maxPlayers': 6, 'doubleRent': True,
+        self.settings = {'startingCash': 1_500, 'maxPlayers': 6, 'doubleRent': True,
                          'vacationCash': True, 'auction': True, 'noRentInJail': False,
                          'mortgage': True, 'evenBuild': True, 'randomOrder': True}
         self.g = None
@@ -534,7 +527,7 @@ class Room:
     # movement -----------------------------------------------------------
     def salary(self, p):
         p.cash += SALARY
-        self.log(f'{p.name} passed Shuru and collected {inr(SALARY)}', p)
+        self.log(f'{p.name} passed Start and collected {inr(SALARY)}', p)
 
     def move_by(self, p, n):
         new = (p.pos + n) % N
@@ -575,7 +568,7 @@ class Room:
                     self.pay(p, self.rent(p.pos, dice_total), o, f"rent for {t['name']}")
         elif ty == 'tax':
             if t['kind'] == 'income':
-                amt = max(0, p.cash) // 10 // 1000 * 1000
+                amt = max(0, p.cash) // 10
                 self.pay(p, amt, None, 'income tax (10%)')
             else:
                 self.pay(p, GST_AMOUNT, None, 'GST')
@@ -610,7 +603,7 @@ class Room:
             n = sum(1 for i in STATIONS if g['owner'][i] == oid)
             return STATION_RENT[n - 1]
         n = sum(1 for i in GROUP_TILES['util'] if g['owner'][i] == oid)
-        return dice_total * (10_000 if n >= 2 else 4_000)
+        return dice_total * (10 if n >= 2 else 4)
 
     def pay(self, p, amount, to, what):
         if amount <= 0:
@@ -634,7 +627,7 @@ class Room:
         c = DECKS[deck][ci]
         g['cardSeq'] += 1
         g['card'] = {'seq': g['cardSeq'], 'deck': deck, 'text': c['text'], 'p': p.id}
-        self.log(f"{p.name} drew {'Kismat' if deck == 'kismat' else 'Khazana'}: {c['text']}", p)
+        self.log(f"{p.name} drew a {DECK_NAMES[deck]} card: {c['text']}", p)
         fx = c['fx']
         if fx == 'cash':
             if c['amt'] >= 0:
@@ -700,7 +693,7 @@ class Room:
         a = self.g['auction']
         if not a:
             raise GameError('There is no auction right now')
-        if not isinstance(amount, int) or amount <= a['bid'] or amount % 1000:
+        if not isinstance(amount, int) or amount <= a['bid'] or amount > 1_000_000:
             raise GameError('Bid too low')
         if amount > p.cash:
             raise GameError('You do not have that much cash')
@@ -988,9 +981,9 @@ class Room:
                     want = t['price'] * random.uniform(0.45, 1.0)
                     if all(g['owner'][i] == p.id for i in GROUP_TILES[t['group']] if i != a['tile']):
                         want = t['price'] * 1.4
-                    a['limits'][p.id] = int(min(want, p.cash - 50_000)) // 1000 * 1000
+                    a['limits'][p.id] = int(min(want, p.cash - 50))
                 lim = min(a['limits'][p.id], p.cash)
-                nxt = a['bid'] + (10_000 if lim - a['bid'] > 30_000 else 2_000)
+                nxt = a['bid'] + (10 if lim - a['bid'] > 30 else 2)
                 if nxt <= lim:
                     return (random.uniform(0.8, 2.2), lambda p=p, nxt=nxt: self.bid(p, nxt))
             return None
@@ -1000,7 +993,7 @@ class Room:
                 return (2.0, lambda to=to, t=t: self.bot_trade_reply(to, t))
         cur = self.current()
         if self.is_auto(cur):
-            return (random.uniform(0.9, 1.5), lambda: self.bot_turn(cur))
+            return (random.uniform(1.6, 2.3), lambda: self.bot_turn(cur))
         return None
 
     def bot_turn(self, p):
@@ -1015,12 +1008,12 @@ class Room:
                 if p.jail_cards:
                     return self.use_jail_card(p)
                 unowned = any(g['owner'][i] is None for i in range(N) if TILES[i]['type'] in OWNABLE)
-                if unowned and p.cash >= JAIL_FINE + 200_000:
+                if unowned and p.cash >= JAIL_FINE + 200:
                     return self.pay_jail(p)
             self.roll(p)
         elif ph == 'buy':
             price = TILES[p.pos]['price']
-            if p.is_bot and p.cash - price >= 20_000:
+            if p.is_bot and p.cash - price >= 20:
                 self.buy(p)
             else:
                 self.decline(p)
@@ -1049,11 +1042,11 @@ class Room:
         g = self.g
         mine = [i for i in range(N) if g['owner'][i] == p.id]
         for i in mine:
-            if g['mortgaged'][i] and p.cash >= self.unmortgage_cost(i) + 250_000:
+            if g['mortgaged'][i] and p.cash >= self.unmortgage_cost(i) + 250:
                 self.unmortgage(p, i)
                 return True
         cands = [i for i in mine if TILES[i]['type'] == 'city' and not self.can_build(p, i)
-                 and p.cash - TILES[i]['houseCost'] >= 200_000]
+                 and p.cash - TILES[i]['houseCost'] >= 200]
         if cands:
             self.build(p, min(cands, key=lambda j: (g['houses'][j], -TILES[j]['price'])))
             return True

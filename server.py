@@ -1,4 +1,4 @@
-"""Nagar Seth - multiplayer server.
+"""RupeeRush - multiplayer server.
 
 Pure standard-library Python (3.9+): serves the web page and speaks WebSocket
 on the same port, so there is nothing to install.
@@ -325,7 +325,7 @@ def lan_ip():
 async def main():
     port = int(os.environ.get('PORT', '8000'))
     server = await asyncio.start_server(handle, '0.0.0.0', port)
-    print('Nagar Seth is running!')
+    print('RupeeRush is running!')
     print(f'  On this computer : http://localhost:{port}')
     ip = lan_ip()
     if ip:
