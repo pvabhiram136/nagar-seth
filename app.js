@@ -1,5 +1,7 @@
 'use strict';
-/* RupeeRush — browser client. The server owns all the rules; this file only draws state and sends intents. */
+/* Browser client. The server owns all the rules; this file only draws state and sends intents.
+   Shared parts (connection, home screen, room box, chat, sound, dice cube) plus the RupeeRush board.
+   The other games live in race.js (shared), snakes.js and ludo.js and register themselves in GAMES. */
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -22,6 +24,8 @@ const SETTING_LABELS = [
 ];
 
 let ws = null, B = null, S = null, me = null, code = null, quitting = false;
+let game = 'rupeerush';     // which game this room is playing (the server tells us when we join)
+const GAMES = {};           // other games register here: { enter(), leave(), render(), onError() }
 let myName = LS.get('ns_name') || '';
 let modal = null;           // {kind, arg}
 let draft = null;           // new-trade form state
@@ -57,6 +61,7 @@ function connect(firstMsg) {
 }
 
 function goHome(msg) {
+  if (GAMES[game]) GAMES[game].leave();
   quitting = true; code = null; S = null; me = null;
   if (ws) ws.close();
   history.replaceState(null, '', location.pathname);
@@ -68,15 +73,17 @@ function goHome(msg) {
 
 function onMsg(m) {
   if (m.t === 'joined') {
-    code = m.code; me = m.you; B = m.board;
+    code = m.code; me = m.you; B = m.board; game = m.game || 'rupeerush';
     if (m.token) { SS.set('ns_tok_' + code, m.token); LS.set('ns_tok_' + code, m.token); }
     history.replaceState(null, '', '?room=' + code);
     $('#home').hidden = true; $('#room').hidden = false;
-    if (!boardBuilt) buildBoard();
+    const other = GAMES[game];
+    $('#board').hidden = !!other; $('#gwrap').hidden = !other;
+    if (other) other.enter(); else if (!boardBuilt) buildBoard();
   } else if (m.t === 'state') {
     S = m; render();
   } else if (m.t === 'error') {
-    if (m.fatal) goHome(m.m); else toast(m.m);
+    if (m.fatal) goHome(m.m); else { toast(m.m); if (GAMES[game]) GAMES[game].onError(); }
   } else if (m.t === 'kicked') {
     goHome('The host removed you from the room');
   } else if (m.t === 'replaced') {
@@ -762,6 +769,7 @@ function updateTradeSum() {
 /* ------------------------------------------------------------------ render & events */
 function render() {
   if (!S || !B) return;
+  if (GAMES[game]) return GAMES[game].render();
   syncDice(); syncTokens(); syncCard(); syncAuction(); notifyTrades(); detectFx();
   renderTiles(); renderRoomBox(); renderPlayers(); renderChat(); renderRight(); renderCenter(); renderModal();
   flushFx();
@@ -771,6 +779,7 @@ document.addEventListener('click', e => {
   if (e.target.id === 'modal') return closeModal();
   if (e.target.closest('#cardView')) { $('#cardView').hidden = true; return; }
   if (e.target.closest('#diceRow.canRoll')) return act('roll');
+  if (e.target.closest('.hudDie.canRoll')) return Race.send('roll');
   const a = e.target.closest('[data-act]');
   if (a) {
     const k = a.dataset.act, v = a.dataset.v, id = a.dataset.id;
@@ -806,7 +815,11 @@ document.addEventListener('click', e => {
       case 'addBot': return send({ t: 'addBot' });
       case 'start': return send({ t: 'start' });
       case 'toLobby': return send({ t: 'toLobby' });
-      case 'kick': e.stopPropagation(); if (S.phase === 'lobby' || confirm('Remove this player? Their properties go back to the bank.')) { send({ t: 'kick', id }); closeModal(); } return;
+      case 'kick': e.stopPropagation(); if (S.phase === 'lobby' || confirm(GAMES[game] ? 'Remove this player from the game?' : 'Remove this player? Their properties go back to the bank.')) { send({ t: 'kick', id }); closeModal(); } return;
+      case 'roll': return GAMES[game] ? Race.send('roll') : act('roll');
+      case 'move': return Race.send('move', { i: +v });
+      case 'resign': if (confirm('Give up and leave this game?')) act('resign'); return;
+      case 'none': return;
       case 'player': return openModal('player', id);
       case 'viewTrade': return openModal('trade', +id);
       case 'newTrade': draft = null; openModal('newTrade'); if (id && draft) { draft.to = id; renderModal(true); } return;
@@ -823,7 +836,7 @@ document.addEventListener('click', e => {
     }
   }
   const tile = e.target.closest('[data-tile]');
-  if (tile && S) openModal('tile', +tile.dataset.tile);
+  if (tile && S && !GAMES[game]) openModal('tile', +tile.dataset.tile);
 });
 
 document.addEventListener('change', e => {
@@ -873,7 +886,24 @@ function readName() {
   LS.set('ns_name', myName);
   return true;
 }
-$('#createBtn').addEventListener('click', () => { if (readName()) connect(() => ({ t: 'create', name: myName })); });
+/* which game a new room will play */
+const GAME_INFO = {
+  rupeerush: { tag: 'Buy cities from Varanasi to Mumbai, collect rent in rupees, and bankrupt your friends — live, on any device.',
+    feats: ['🎲 2–8 players, bots included', '🏠 Houses, hotels &amp; mortgages', '🔨 Live auctions', '🤝 Player-to-player trades'] },
+  snakes: { tag: 'Race from square 1 to 100. Ladders lift you up, snakes send you sliding back down — pure luck, loud fun.',
+    feats: ['🎲 2–8 players, bots included', '🪜 7 ladders, 8 snakes', '⚡ A game takes 5–10 minutes', '📱 Works on any phone'] },
+  ludo: { tag: 'Roll a six to get out, race your tokens round the board, and knock your friends back to their yard.',
+    feats: ['🎲 2–4 players, bots included', '💥 Captures and bonus rolls', '⭐ Safe star squares', '⚡ Quick mode with 2 tokens'] },
+};
+let pick = GAME_INFO[LS.get('rr_game')] ? LS.get('rr_game') : 'rupeerush';
+function showPick() {
+  document.querySelectorAll('.gcard').forEach(b => b.classList.toggle('on', b.dataset.game === pick));
+  $('#home .tag').textContent = GAME_INFO[pick].tag;
+  $('#home .feats').innerHTML = GAME_INFO[pick].feats.map(f => `<li>${f}</li>`).join('');
+}
+document.querySelectorAll('.gcard').forEach(b => b.addEventListener('click', () => { pick = b.dataset.game; LS.set('rr_game', pick); showPick(); tone(660, .05, 'triangle', .05); }));
+showPick();
+$('#createBtn').addEventListener('click', () => { if (readName()) connect(() => ({ t: 'create', name: myName, game: pick })); });
 $('#joinForm').addEventListener('submit', e => {
   e.preventDefault();
   const c = $('#codeInput').value.trim().toUpperCase();

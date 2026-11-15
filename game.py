@@ -1,12 +1,13 @@
 """RupeeRush - game engine (board data, rules, rooms, bots).
 
 Everything here is synchronous and runs inside the server's asyncio loop.
-The server only needs: Room, Player, GameError, BOARD_PUBLIC.
+The lobby, chat, host and bot timer live in rooms.py (shared by every game);
+this file adds only the RupeeRush rules.
 """
-import json
 import random
-import secrets
 import time
+
+from rooms import AVATARS, COLORS, BasePlayer, BaseRoom, GameError
 
 SALARY = 200
 JAIL_FINE = 50
@@ -16,8 +17,6 @@ RENT_MULT = [1, 5, 15, 40, 52, 65]
 STATION_RENT = [25, 50, 100, 200]
 AUCTION_FIRST_SECS = 10
 AUCTION_BID_SECS = 7
-AFK_GRACE = 20  # seconds before a disconnected player is auto-played
-HOST_GRACE = 10  # seconds a disconnected host keeps the host role
 
 GROUPS = {
     'g1': {'name': 'Uttar Pradesh', 'color': '#b08968', 'houseCost': 50},
@@ -145,9 +144,6 @@ TREASURE = [
 ]
 DECKS = {'luck': LUCK, 'treasure': TREASURE}
 
-COLORS = ['#ff6b6b', '#ffa94d', '#ffe066', '#69db7c', '#3bc9db', '#748ffc', '#da77f2', '#f783ac']
-AVATARS = ['🛺', '🐘', '🐅', '🦚', '🏏', '🪁', '☕', '🛕', '🥭', '🪔', '🚂', '🐪']
-BOT_NAMES = ['Aarav', 'Diya', 'Kabir', 'Meera', 'Rohan', 'Isha', 'Vikram']
 STARTING_CASH_OPTIONS = [1_000, 1_500, 2_000, 2_500, 3_000]
 BOOL_SETTINGS = ['doubleRent', 'vacationCash', 'auction', 'noRentInJail', 'mortgage', 'evenBuild', 'randomOrder']
 
@@ -163,23 +159,7 @@ def inr(n):
     return ('-' if n < 0 else '') + '₹' + format(abs(n), ',')
 
 
-class GameError(Exception):
-    pass
-
-
-class Player:
-    def __init__(self, name, is_bot=False):
-        self.id = secrets.token_hex(4)
-        self.token = secrets.token_hex(16)
-        self.name = name
-        self.color = COLORS[0]
-        self.avatar = AVATARS[0]
-        self.is_bot = is_bot
-        self.conn = None
-        self.connected = is_bot
-        self.disc_at = 0.0
-        self.reset()
-
+class Player(BasePlayer):
     def reset(self):
         self.cash = 0
         self.pos = 0
@@ -197,57 +177,45 @@ class Player:
                 'bankrupt': self.bankrupt, 'mv': self.mv}
 
 
-class Room:
+class Room(BaseRoom):
+    GAME = 'rupeerush'
+    BOARD = BOARD_PUBLIC
+    PLAYER = Player
+    MAX_SEATS = 8
+    TIMERS = ('bot_timer', 'auction_timer')
+
     def __init__(self, code, loop):
-        self.code = code
-        self.loop = loop
-        self.players = []
-        self.spectators = set()
-        self.host_id = None
-        self.phase = 'lobby'
-        self.settings = {'startingCash': 1_500, 'maxPlayers': 6, 'doubleRent': True,
-                         'vacationCash': True, 'auction': True, 'noRentInJail': False,
-                         'mortgage': True, 'evenBuild': True, 'randomOrder': True}
-        self.g = None
-        self.logs = []
-        self.chat = []
-        self.log_seq = 0
-        self.bot_timer = None
+        super().__init__(code, loop)
         self.auction_timer = None
-        self.bot_fail = 0
-        self.last_active = time.time()
+
+    def default_settings(self):
+        return {'startingCash': 1_500, 'maxPlayers': 6, 'doubleRent': True,
+                'vacationCash': True, 'auction': True, 'noRentInJail': False,
+                'mortgage': True, 'evenBuild': True, 'randomOrder': True}
+
+    def apply_settings(self, s):
+        if s.get('startingCash') in STARTING_CASH_OPTIONS:
+            self.settings['startingCash'] = s['startingCash']
+        super().apply_settings(s)
+        for k in BOOL_SETTINGS:
+            if isinstance(s.get(k), bool):
+                self.settings[k] = s[k]
+
+    def drop_player(self, p, reason):
+        self.bankrupt(p, reason)
+
+    def bot_stuck(self):
+        cur = self.current()
+        if self.is_auto(cur) and not self.g['auction']:
+            self.bot_fail = 0
+            self.bankrupt(cur, 'could not continue')
 
     # ------------------------------------------------------------ helpers
-    def pl(self, pid):
-        for p in self.players:
-            if p.id == pid:
-                return p
-        return None
-
-    def alive(self):
-        return [p for p in self.players if not p.bankrupt]
-
     def current(self):
         return self.pl(self.g['order'][self.g['turnIdx']])
 
-    def log(self, text, p=None):
-        self.log_seq += 1
-        self.logs.append({'i': self.log_seq, 'p': p.id if p else None, 'm': text})
-        if len(self.logs) > 120:
-            del self.logs[:40]
-
-    def humans_connected(self):
-        return [p for p in self.players if not p.is_bot and p.connected]
-
-    def fix_host(self):
-        h = self.pl(self.host_id)
-        if h and not h.is_bot and (h.connected or time.time() - h.disc_at < HOST_GRACE):
-            return  # a host who is just refreshing the page keeps the crown
-        hs = self.humans_connected()
-        self.host_id = hs[0].id if hs else self.host_id
-
     # ------------------------------------------------------------ networking
-    def state(self):
+    def game_state(self):
         g = self.g
         gs = None
         if g:
@@ -259,124 +227,9 @@ class Room:
                   'auction': None if not a else {
                       'tile': a['tile'], 'bid': a['bid'], 'bidder': a['bidder'],
                       'endsIn': max(0, int((a['ends'] - time.time()) * 1000))}}
-        return {'t': 'state', 'code': self.code, 'phase': self.phase, 'hostId': self.host_id,
-                'settings': self.settings, 'players': [p.public() for p in self.players],
-                'g': gs, 'log': self.logs[-60:], 'chat': self.chat[-60:]}
-
-    def broadcast(self):
-        data = json.dumps(self.state(), ensure_ascii=False, separators=(',', ':'))
-        for p in self.players:
-            if p.conn:
-                p.conn.send_raw(data)
-        for c in list(self.spectators):
-            c.send_raw(data)
+        return gs
 
     # ------------------------------------------------------------ lobby
-    def add_player(self, name, is_bot=False):
-        if self.phase != 'lobby':
-            raise GameError('The game has already started')
-        if len(self.players) >= self.settings['maxPlayers']:
-            raise GameError('This room is full')
-        p = Player(name, is_bot)
-        used = {q.color for q in self.players}
-        p.color = next((c for c in COLORS if c not in used), COLORS[0])
-        used_av = {q.avatar for q in self.players}
-        p.avatar = next((a for a in AVATARS if a not in used_av), AVATARS[0])
-        self.players.append(p)
-        if self.host_id is None and not is_bot:
-            self.host_id = p.id
-        return p
-
-    def remove_player(self, p):
-        if p in self.players:
-            self.players.remove(p)
-        self.fix_host()
-
-    def handle(self, p, m):
-        """Dispatch one client message from player p. Raises GameError for user-facing errors."""
-        self.last_active = time.time()
-        t = m.get('t')
-        if t == 'chat':
-            text = str(m.get('text', '')).strip()[:200]
-            if text:
-                self.log_seq += 1
-                self.chat.append({'i': self.log_seq, 'p': p.id, 'n': p.name, 'm': text})
-                if len(self.chat) > 100:
-                    del self.chat[:40]
-        elif t == 'appearance':
-            if self.phase != 'lobby':
-                raise GameError('Appearance can only be changed in the lobby')
-            c, a = m.get('color'), m.get('avatar')
-            if c in COLORS:
-                if any(q.color == c and q is not p for q in self.players):
-                    raise GameError('That colour is taken')
-                p.color = c
-            if a in AVATARS:
-                p.avatar = a
-        elif t == 'settings':
-            self.need_host(p)
-            if self.phase != 'lobby':
-                raise GameError('Settings are locked once the game starts')
-            s = m.get('settings') or {}
-            if s.get('startingCash') in STARTING_CASH_OPTIONS:
-                self.settings['startingCash'] = s['startingCash']
-            mp = s.get('maxPlayers')
-            if isinstance(mp, int) and 2 <= mp <= 8 and mp >= len(self.players):
-                self.settings['maxPlayers'] = mp
-            for k in BOOL_SETTINGS:
-                if isinstance(s.get(k), bool):
-                    self.settings[k] = s[k]
-        elif t == 'addBot':
-            self.need_host(p)
-            names = [n for n in BOT_NAMES if not any(q.name == n for q in self.players)]
-            self.add_player(random.choice(names) if names else 'Bot', is_bot=True)
-        elif t == 'kick':
-            self.need_host(p)
-            q = self.pl(m.get('id'))
-            if not q or q is p:
-                raise GameError('Cannot remove that player')
-            if self.phase == 'lobby':
-                if q.conn:
-                    q.conn.send({'t': 'kicked'})
-                    q.conn.room = None
-                    q.conn.player = None
-                    q.conn = None
-                self.remove_player(q)
-            elif self.phase == 'playing' and not q.bankrupt:
-                self.bankrupt(q, 'was removed by the host')
-        elif t == 'start':
-            self.need_host(p)
-            self.start_game()
-        elif t == 'toLobby':
-            self.need_host(p)
-            if self.phase != 'ended':
-                raise GameError('The game is still running')
-            self.to_lobby()
-        elif t == 'action':
-            self.act(p, m)
-        else:
-            raise GameError('Unknown message')
-
-    def need_host(self, p):
-        if p.id != self.host_id:
-            raise GameError('Only the host can do that')
-
-    def to_lobby(self):
-        self.cancel_timers()
-        self.players = [p for p in self.players if p.is_bot or p.connected]
-        for p in self.players:
-            p.reset()
-        self.g = None
-        self.logs = []
-        self.phase = 'lobby'
-        self.fix_host()
-
-    def cancel_timers(self):
-        for name in ('bot_timer', 'auction_timer'):
-            h = getattr(self, name)
-            if h:
-                h.cancel()
-            setattr(self, name, None)
 
     def start_game(self):
         if self.phase != 'lobby':
@@ -937,37 +790,6 @@ class Room:
             self.next_turn()
 
     # ------------------------------------------------------------ bots
-    def is_auto(self, p):
-        if p.bankrupt:
-            return False
-        return p.is_bot or (not p.connected and time.time() - p.disc_at > AFK_GRACE)
-
-    def schedule_bots(self):
-        if self.bot_timer or self.phase != 'playing':
-            return
-        if not self.humans_connected() and not self.spectators:
-            return  # nobody is watching: pause until someone reconnects
-        plan = self.bot_plan()
-        if plan:
-            self.bot_timer = self.loop.call_later(plan[0], self.bot_tick)
-
-    def bot_tick(self):
-        self.bot_timer = None
-        if self.phase != 'playing':
-            return
-        plan = self.bot_plan()
-        if plan:
-            try:
-                plan[1]()
-                self.bot_fail = 0
-            except GameError:
-                self.bot_fail += 1
-                cur = self.current()
-                if self.bot_fail >= 3 and self.is_auto(cur) and not self.g['auction']:
-                    self.bot_fail = 0
-                    self.bankrupt(cur, 'could not continue')
-            self.broadcast()
-        self.schedule_bots()
 
     def bot_plan(self):
         g = self.g

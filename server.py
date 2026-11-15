@@ -1,4 +1,4 @@
-"""RupeeRush - multiplayer server.
+"""RupeeRush games site - multiplayer server.
 
 Pure standard-library Python (3.9+): serves the web page and speaks WebSocket
 on the same port, so there is nothing to install.
@@ -17,7 +17,12 @@ import struct
 import sys
 import time
 
-from game import AFK_GRACE, BOARD_PUBLIC, HOST_GRACE, GameError, Room
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # the game files sit next to this one
+
+from game import Room as RupeeRushRoom
+from game_ludo import LudoRoom
+from game_snakes import SnakesRoom
+from rooms import AFK_GRACE, HOST_GRACE, GameError
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 # The page normally lives in public/. If the files were uploaded flat (all in one
@@ -30,6 +35,8 @@ MIME = {'.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
         '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json',
         '.webmanifest': 'application/manifest+json'}
 ROOMS = {}
+# Every game on the site. A room remembers which game it is, so invite links need no game name.
+GAMES = {'rupeerush': RupeeRushRoom, 'snakes': SnakesRoom, 'ludo': LudoRoom}
 CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
 MAX_ROOMS = 500
 LOBBY_GRACE = 8
@@ -130,7 +137,7 @@ def joined(conn, room, p):
     conn.room = room
     conn.player = p
     conn.send({'t': 'joined', 'code': room.code, 'you': p.id if p else None,
-               'token': p.token if p else None, 'board': BOARD_PUBLIC})
+               'token': p.token if p else None, 'game': room.GAME, 'board': room.BOARD})
     room.fix_host()
     room.broadcast()
     room.schedule_bots()
@@ -143,7 +150,7 @@ def on_message(conn, m):
         if t == 'create':
             if len(ROOMS) >= MAX_ROOMS:
                 return conn.send({'t': 'error', 'm': 'Server is full, try again later'})
-            room = Room(new_code(), loop)
+            room = GAMES.get(m.get('game') if isinstance(m.get('game'), str) else '', RupeeRushRoom)(new_code(), loop)
             ROOMS[room.code] = room
             p = room.add_player(clean_name(m.get('name')))
             p.conn, p.connected = conn, True
