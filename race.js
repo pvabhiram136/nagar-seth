@@ -104,17 +104,20 @@ const Race = {
     GAMES[name] = {
       enter: () => Race.enter(impl), leave: () => Race.leave(), render: () => Race.render(),
       onError: () => { Race.pending = false; if (S && Race.impl) { Race.impl.snap(); Race.hud(); } },
+      click: (k, v, el) => !!(Race.impl && Race.impl.click && Race.impl.click(k, v, el)),
     };
   },
 
   enter(impl) {
     this.gen++; this.impl = impl; this.q = []; this.playing = false; this.lastSeq = -1;
-    this.pending = false; this.caption = ''; this.lastTurn = null; this.logKeep = null;
+    this.pending = false; this.caption = ''; this.lastTurn = null; this.logKeep = null; this.sawLobby = false;
     const b = $('#gboard');
     b.className = impl.cls; b.innerHTML = '';
     impl.build(b);
     setDie('gd', 1);
     $('.hudDie').classList.remove('rolling', 'canRoll');
+    $('.hudDie').hidden = !!impl.noDie;                 // card games have no die
+    $('#hud').classList.toggle('wide', !!impl.noDie);
   },
 
   leave() {
@@ -129,11 +132,15 @@ const Race = {
     renderRoomBox(); renderChat();
     if (!g) {
       this.lastSeq = -1; this.q.length = 0; this.lastTurn = null; this.logKeep = null;
+      this.sawLobby = true;
       if (!this.playing) impl.snap();
-    } else if (this.lastSeq === -1 || g.seq < this.lastSeq || g.seq - this.lastSeq > g.events.length) {
+    } else if ((this.lastSeq === -1 && !(this.sawLobby && g.seq <= g.events.length)) || g.seq < this.lastSeq || g.seq - Math.max(0, this.lastSeq) > g.events.length) {
       this.lastSeq = g.seq; this.q.length = 0;          // just joined, or missed too much: jump to the truth
+      this.sawLobby = false;
       if (!this.playing) impl.snap();
     } else {
+      if (this.lastSeq === -1) this.lastSeq = 0;      // we watched this game start: show its first events too
+      this.sawLobby = false;
       for (const ev of g.events) if (ev.seq > this.lastSeq) { this.q.push(ev); this.lastSeq = ev.seq; }
       if (this.q.length) this.pump(); else if (!this.playing) impl.snap();
     }
@@ -203,15 +210,21 @@ const Race = {
       t = `<span class="winner">🏆 ${w ? esc(w.name) : 'Nobody'} wins!</span>`;
       a = isHost() ? '<button class="btn green" data-act="toLobby">Play again</button>' : '<span class="muted">Waiting for the host</span>';
     } else {
-      const cur = P(g.turn), myTurn = g.turn === me, hint = impl.hint(g, myTurn, cur);
+      const tid = impl.turn ? impl.turn(g) : g.turn, cur = tid ? P(tid) : null, myTurn = !!tid && tid === me;
       $('#hud').style.setProperty('--pc', cur ? cur.color : '#fff');
-      t = (myTurn ? `<span class="myturn">Your turn, ${esc(cur.name)}!</span>` : `${this.name(cur)}'s turn${cur && cur.bot ? ' 🤖' : ''}`) + (hint ? `<small>${hint}</small>` : '');
-      if (myTurn && g.turnPhase === 'roll') {
-        can = !this.pending;
-        a = `<button class="btn primary" data-act="roll" ${can ? '' : 'disabled'}>🎲 Roll</button>`;
+      if (impl.hud) {                     // card games draw their own text and buttons
+        const r = impl.hud(g, myTurn, cur);
+        t = r.t; a = r.a;
+      } else {
+        const hint = impl.hint(g, myTurn, cur);
+        t = (myTurn ? `<span class="myturn">Your turn, ${esc(cur.name)}!</span>` : `${this.name(cur)}'s turn${cur && cur.bot ? ' 🤖' : ''}`) + (hint ? `<small>${hint}</small>` : '');
+        if (myTurn && g.turnPhase === 'roll') {
+          can = !this.pending;
+          a = `<button class="btn primary" data-act="roll" ${can ? '' : 'disabled'}>🎲 Roll</button>`;
+        }
       }
       if (myTurn && this.lastTurn !== me) SFX.turn();
-      this.lastTurn = g.turn;
+      this.lastTurn = tid;
     }
     setHTML(text, t); setHTML(actEl, a);
     $('.hudDie').classList.toggle('canRoll', can);
@@ -222,10 +235,10 @@ const Race = {
     const impl = this.impl, g = S.g, host = isHost();
     const rows = S.players.map(p => {
       const tags = [p.id === me ? 'you' : '', p.id === S.hostId ? '👑' : '', p.bot ? '🤖' : '', !p.connected && !p.bot ? '⚠ offline' : ''].filter(Boolean).join(' ');
-      const turn = g && (this.playing ? this.shownTurn === p.id : S.phase === 'playing' && g.turn === p.id);
+      const turn = g && (this.playing ? this.shownTurn === p.id : S.phase === 'playing' && (impl.turn ? impl.turn(g) : g.turn) === p.id);
       const rank = g ? g.ranks.indexOf(p.id) : -1;
       const kick = host && p.id !== me && !p.bankrupt && S.phase !== 'ended' ? `<button class="x" data-act="kick" data-id="${p.id}" title="Remove">✕</button>` : '';
-      const info = S.phase === 'lobby' ? '' : `<span class="pinfo">${p.bankrupt ? 'left' : rank >= 0 && !this.playing ? (MEDALS[rank] || '#' + (rank + 1)) : impl.info(p)}</span>`;
+      const info = S.phase === 'lobby' ? '' : `<span class="pinfo">${rank >= 0 && !this.playing && (S.phase === 'ended' || !p.bankrupt) ? (MEDALS[rank] || '#' + (rank + 1)) : p.bankrupt ? (impl.outText || 'left') : impl.info(p)}</span>`;
       return `<div class="prow ${turn ? 'turn' : ''} ${p.bankrupt ? 'out' : ''}" data-act="none">
         <span class="chip" style="--c:${p.color}">${p.avatar}</span>
         <span class="nm">${esc(p.name)}<small>${tags}</small></span>${info}${kick}</div>`;
@@ -246,7 +259,8 @@ const Race = {
     const log = this.logKeep.slice(-40).map(l => { const p = l.p && P(l.p); return `<div class="ln"><i class="dot" style="--c:${p ? p.color : '#666'}"></i><span>${esc(l.m)}</span></div>`; }).join('');
     h += `<div class="panel"><h3>Game log</h3><div class="glog">${log}</div></div>`;
     h += `<div class="panel"><h3>How to play</h3><ul class="rules">${impl.rules(S.settings).map(r => `<li>${r}</li>`).join('')}</ul></div>`;
-    if (m && !m.bankrupt && S.phase === 'playing' && !g.ranks.includes(me)) h += '<button class="btn danger small" data-act="resign">Give up</button>';
+    if (impl.hostEnd && isHost() && S.phase === 'playing') h += '<button class="btn small" data-act="endGame">End the game now</button>';
+    if (m && !m.bankrupt && S.phase === 'playing' && !g.ranks.includes(me)) h +='<button class="btn danger small" data-act="resign">Give up</button>';
     if (setHTML(el, h)) { const l = $('.glog', el); if (l) l.scrollTop = l.scrollHeight; }
   },
 
@@ -260,7 +274,7 @@ const Race = {
     const seats = [];
     for (let v = 2; v <= impl.maxSeats; v++) seats.push(v);
     const selects = [['maxPlayers', 'Max players', seats.map(v => [v, v])]].concat(impl.selects || [])
-      .map(([k, l, opts]) => `<label class="setRow"><span>${l}</span><select data-set="${k}" ${dis}>${opts.map(([v, t]) => `<option value="${v}" ${v === s[k] ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`).join('');
+      .map(([k, l, opts]) => `<label class="setRow"><span>${l}</span><select data-set="${k}" ${dis}>${(typeof opts === 'function' ? opts(B) : opts).map(([v, t]) => `<option value="${v}" ${v === s[k] ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`).join('');
     const toggles = impl.toggles.map(([k, l, d]) => `<label class="setRow"><span>${l}<small>${d}</small></span><input type="checkbox" class="sw-t" data-set="${k}" ${s[k] ? 'checked' : ''} ${dis}></label>`).join('');
     return `
       <div class="panel"><h3>Your colour</h3><div class="swatches">${sw}</div><div class="avatars">${av}</div></div>
@@ -277,3 +291,6 @@ document.addEventListener('keydown', e => {
     Race.send('roll');
   }
 });
+
+/* card tables are laid out from the window size, so redraw them when it changes */
+window.addEventListener('resize', () => { if (Race.impl && Race.impl.resize && S && !Race.playing) Race.impl.snap(); });

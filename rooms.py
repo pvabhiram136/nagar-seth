@@ -362,13 +362,18 @@ class RaceRoom(BaseRoom):
             if not g['ranks'] and left:
                 g['ranks'].append(left[0].id)  # everyone else left: last player standing
                 self.log(f'{left[0].name} wins the game! 🏆', left[0])
-            g['winner'] = g['ranks'][0] if g['ranks'] else None
-            g['turnPhase'] = 'over'
-            self.cancel_timers()
-            self.phase = 'ended'
-            self.emit({'k': 'end', 'winner': g['winner']}, 0)
+            self.end_game()
             return True
         return False
+
+    def end_game(self):
+        """Finish the game; g['ranks'] must already hold the finishing order."""
+        g = self.g
+        g['winner'] = g['ranks'][0] if g['ranks'] else None
+        g['turnPhase'] = 'over'
+        self.cancel_timers()
+        self.phase = 'ended'
+        self.emit({'k': 'end', 'winner': g['winner']}, 0)
 
     def on_drop(self, p):
         """Game-specific clean-up when p leaves a running game."""
@@ -429,3 +434,41 @@ class RaceRoom(BaseRoom):
               'winner': g['winner']}
         gs.update(self.extra_state())
         return gs
+
+
+class CardRoom(RaceRoom):
+    """Card games: like RaceRoom, but each player also gets a private part of the state
+    (their own hand) under the key 'you'. Nobody else, and no spectator, is ever sent it."""
+    TIMERS = ('bot_timer', 'next_timer')
+
+    def __init__(self, code, loop):
+        super().__init__(code, loop)
+        self.next_timer = None
+
+    def private(self, p):
+        return None
+
+    def broadcast(self):
+        st = self.state()
+        st['you'] = None
+        watchers = json.dumps(st, ensure_ascii=False, separators=(',', ':')) if self.spectators else None
+        for p in self.players:
+            if p.conn:
+                st['you'] = self.private(p) if self.g else None
+                p.conn.send_raw(json.dumps(st, ensure_ascii=False, separators=(',', ':')))
+        for c in list(self.spectators):
+            c.send_raw(watchers)
+
+    def later(self, secs, fn):
+        """Run fn after secs seconds (replacing any earlier pending call), then tell everyone."""
+        if self.next_timer:
+            self.next_timer.cancel()
+
+        def fire():
+            self.next_timer = None
+            if self.phase != 'playing':
+                return
+            fn()
+            self.broadcast()
+            self.schedule_bots()
+        self.next_timer = self.loop.call_later(secs, fire)

@@ -21,7 +21,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # the game files
 
 from game import Room as RupeeRushRoom
 from game_ludo import LudoRoom
+from game_rummy import RummyRoom
 from game_snakes import SnakesRoom
+from game_teenpatti import TeenPattiRoom
 from rooms import AFK_GRACE, HOST_GRACE, GameError
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -36,7 +38,8 @@ MIME = {'.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
         '.webmanifest': 'application/manifest+json'}
 ROOMS = {}
 # Every game on the site. A room remembers which game it is, so invite links need no game name.
-GAMES = {'rupeerush': RupeeRushRoom, 'snakes': SnakesRoom, 'ludo': LudoRoom}
+GAMES = {'rupeerush': RupeeRushRoom, 'snakes': SnakesRoom, 'ludo': LudoRoom,
+         'teenpatti': TeenPattiRoom, 'rummy': RummyRoom}
 CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
 MAX_ROOMS = 500
 LOBBY_GRACE = 8

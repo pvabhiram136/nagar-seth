@@ -784,6 +784,7 @@ document.addEventListener('click', e => {
   if (a) {
     const k = a.dataset.act, v = a.dataset.v, id = a.dataset.id;
     e.preventDefault();
+    if (GAMES[game] && GAMES[game].click && GAMES[game].click(k, v, a)) return;      // a game may handle its own buttons
     switch (k) {
       case 'close': return closeModal();
       case 'mute': muted = !muted; LS.set('rr_mute', muted ? '1' : '0'); renderRoomBox(); if (!muted) SFX.coin(); return;
@@ -894,6 +895,10 @@ const GAME_INFO = {
     feats: ['🎲 2–8 players, bots included', '🪜 7 ladders, 8 snakes', '⚡ A game takes 5–10 minutes', '📱 Works on any phone'] },
   ludo: { tag: 'Roll a six to get out, race your tokens round the board, and knock your friends back to their yard.',
     feats: ['🎲 2–4 players, bots included', '💥 Captures and bonus rolls', '⭐ Safe star squares', '⚡ Quick mode with 2 tokens'] },
+  teenpatti: { tag: 'Three cards each, blind or seen. Bet, bluff, pack or call for a show — with free play chips, never real money.',
+    feats: ['🃏 2–6 players, bots included', '🪙 Play chips only', '👁 Blind, chaal, show &amp; side show', '📈 Rising boot keeps it moving'] },
+  rummy: { tag: 'Indian 13-card rummy with a wild joker. Build two sequences, one of them pure, and declare before your friends do.',
+    feats: ['🂡 2–6 players, bots included', '★ Wild jokers every deal', '🧠 Hand sorted into groups for you', '🏆 Lowest points wins'] },
 };
 let pick = GAME_INFO[LS.get('rr_game')] ? LS.get('rr_game') : 'rupeerush';
 function showPick() {
